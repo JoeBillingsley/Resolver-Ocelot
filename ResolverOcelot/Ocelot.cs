@@ -1,5 +1,6 @@
-﻿using System.Collections.Generic;
-using System.Linq;
+﻿using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace ResolverOcelot
 {
@@ -15,17 +16,17 @@ namespace ResolverOcelot
          **/
         public static bool CanResolve(IDependantNode node)
         {
-            return ResolveHelper(node, new List<IDependantNode>());
+            return CanResolve(node, new List<IDependantNode>());
         }
 
-        private static bool ResolveHelper(IDependantNode node, IList<IDependantNode> visitedNodes)
+        private static bool CanResolve(IDependantNode node, IList<IDependantNode> visitedNodes)
         {
             visitedNodes = new List<IDependantNode>(visitedNodes);
             visitedNodes.Add(node);
 
             foreach (var dependantNode in node.Dependancies)
             {
-                if (visitedNodes.Contains(dependantNode) || !ResolveHelper(dependantNode, visitedNodes))
+                if (visitedNodes.Contains(dependantNode) || !CanResolve(dependantNode, visitedNodes))
                     return false;
             }
 
@@ -34,26 +35,45 @@ namespace ResolverOcelot
 
         /**
          * <summary>
-         * Attempts to run the action associated with a node. If the node has dependancies, the dependant nodes will be executed before attempting to execute the current node.
+         * Attempts to run the action associated with a node. If the node has dependancies, the dependant nodes will be executed before attempting to execute the current node. Each action will only be run once.
          * </summary>
          * <param name="node">The node to begin execution on</param>
          * <returns>True if all nodes and dependant action are succesfully resolved and executed, false if any are unsuccesful.</returns>
          **/
         public static bool Execute(IDependantNode node)
         {
-            if (!node.Dependancies.Any()) return node.Action();
-            
-            // TODO: Parallelise this. Diamond dependancy problem.
-            // Just need to ensure that an action cannot be called twice at the same time somehow. Clever locking required thats not obvious at 10 in the evening.
+            return Execute(node, new ConcurrentDictionary<IDependantNode, int>());
+        }
 
-            var failed = false;
-            foreach (var dependantNode in node.Dependancies)
+        /**
+         * <summary>
+         * Attempts to run the action associated with a node. If the node has dependancies, the dependant nodes will be executed before attempting to execute the current node. 
+         * 
+         * Each action will be run at a maximum, the value provided in the dictionary for the IDependantNode.
+         * </summary>
+         * <param name="node">The node to begin execution on</param>
+         * <param name="remainingExecutions">Provides the maximum number of times an action should be run for a node</param>
+         * <returns>True if all nodes and dependant action are succesfully resolved and executed, false if any are unsuccesful.</returns>
+         **/
+        public static bool Execute(IDependantNode node, ConcurrentDictionary<IDependantNode, int> remainingExecutions)
+        {
+            var success = true;
+
+            // TODO: Could the same result be achieved but simplified with asnyc/await?
+
+            Parallel.ForEach(node.Dependancies, dependantNode =>
             {
-                if (!Ocelot.Execute(dependantNode))
-                    failed = true;
-            }
+                if (!remainingExecutions.ContainsKey(dependantNode))
+                    remainingExecutions[dependantNode] = 1;
 
-            return !failed ? node.Action() : false;
+                if (remainingExecutions[dependantNode] > 0)
+                {
+                    success = success && Execute(dependantNode, remainingExecutions);
+                    remainingExecutions[dependantNode]--;
+                }
+            });
+
+           return success && node.Action();
         }
 
     }
